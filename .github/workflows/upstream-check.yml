@@ -42,6 +42,7 @@ jobs:
         run: |
           latest="${{ steps.latest.outputs.tag }}"
           changed=0
+          baseline=""
           count=$(yq '.pinned | length' UPSTREAM.yml)
           for i in $(seq 0 $((count - 1))); do
             file=$(yq ".pinned[$i].file" UPSTREAM.yml)
@@ -49,11 +50,13 @@ jobs:
             case "$kind" in
               from_tag)
                 current=$(grep -oP '(?<=:)[^\s]+$' <(grep '^FROM' "$file" | tail -1))
+                [ -z "$baseline" ] && baseline="$current"
                 [ "$current" = "$latest" ] || { sed -i "s|:$current|:$latest|" "$file"; changed=1; }
                 ;;
               build_arg)
                 argname=$(yq ".pinned[$i].arg_name" UPSTREAM.yml)
                 current=$(grep -oP "(?<=^ARG ${argname}=)[^\s]+$" "$file")
+                [ -z "$baseline" ] && baseline="$current"
                 [ "$current" = "$latest" ] || { sed -i "s|ARG ${argname}=${current}|ARG ${argname}=${latest}|" "$file"; changed=1; }
                 ;;
               digest)
@@ -66,6 +69,26 @@ jobs:
           done
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
           echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "baseline=$baseline" >> "$GITHUB_OUTPUT"
+
+      - name: Classify bump size
+        id: bump
+        run: |
+          strip() { echo "$1" | grep -oP '\d+(\.\d+){0,2}' | head -1; }
+          old_major=$(strip "${{ steps.diff.outputs.baseline }}" | cut -d. -f1)
+          new_major=$(strip "${{ steps.diff.outputs.latest }}" | cut -d. -f1)
+          if [ -n "$old_major" ] && [ -n "$new_major" ] && [ "$old_major" != "$new_major" ]; then
+            echo "major=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "major=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ensure major-version-bump label exists
+        if: steps.diff.outputs.changed == '1' && steps.bump.outputs.major == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create major-version-bump --color B60205 --description "Upstream cut a major release — review breaking changes before merging" 2>/dev/null || true
 
       - name: Open PR
         if: steps.diff.outputs.changed == '1'
@@ -83,6 +106,15 @@ jobs:
           if yq -e '.pinned[] | select(.kind == "digest")' UPSTREAM.yml > /dev/null 2>&1; then
             digest_note=$'\n\n**Note:** one or more services pin by image digest, not version tag (no upstream version exists to compare) — those were *not* touched by this bump and still need a manual check if you want the latest image.'
           fi
-          gh pr create --title "Bump upstream to ${{ steps.diff.outputs.latest }}" \
-            --body "Automated version check found a newer upstream release. Review the [upstream changelog](https://github.com/${{ steps.manifest.outputs.repo }}/releases/tag/${{ steps.diff.outputs.latest }}) before merging — this does not run a smoke deploy.${digest_note}" \
-            --head "$branch"
+
+          title="Bump upstream to ${{ steps.diff.outputs.latest }}"
+          major_note=""
+          if [ "${{ steps.bump.outputs.major }}" = "1" ]; then
+            title="[MAJOR] $title"
+            major_note=$'\n\n**⚠️ Major version bump** ('"${{ steps.diff.outputs.baseline }}"' → '"${{ steps.diff.outputs.latest }}"$'). Treat this like a new integration, not a routine patch:\n- Re-read the upstream changelog/migration guide for breaking changes (env vars, config shape, DB migrations)\n- Diff against `docs/railway-wiring.md` — service graph, required vars, or volumes may have changed\n- Re-run local `docker compose up` sanity + a smoke deploy before merging; do not fast-merge on CI green alone'
+          fi
+
+          gh pr create --title "$title" \
+            --body "Automated version check found a newer upstream release. Review the [upstream changelog](https://github.com/${{ steps.manifest.outputs.repo }}/releases/tag/${{ steps.diff.outputs.latest }}) before merging — this does not run a smoke deploy.${major_note}${digest_note}" \
+            --head "$branch" \
+            $([ "${{ steps.bump.outputs.major }}" = "1" ] && echo "--label major-version-bump")
