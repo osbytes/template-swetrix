@@ -97,6 +97,13 @@ Expose optional SMTP variables to deployers who want real transactional email
 configured. Optional Google / OIDC integrations are documented upstream:
 https://docs.swetrix.com/selfhosting/configuring
 
+The wrapper entrypoint blocks on `${CLICKHOUSE_HOST}:${CLICKHOUSE_PORT}/ping`
+before running Swetrix's `clickhouse:initialise`. Railway has no
+`depends_on: service_healthy`, and upstream's init script swallows connection
+errors and exits 0, so without the wait the API boots against an empty database.
+Tune with optional `CLICKHOUSE_WAIT_ATTEMPTS` (default 60) and
+`CLICKHOUSE_WAIT_INTERVAL` (default 5 seconds).
+
 ## Data services
 
 ### redis
@@ -149,3 +156,24 @@ stock image is enough for the template.
   Edition; wait for `/ping` before expecting analytics writes to succeed.
 - At least ~2 GB RAM is recommended for the whole stack (upstream self-hosting
   guidance).
+
+## Troubleshooting
+
+### `UNKNOWN_TABLE: Unknown table expression identifier 'user'`
+
+Swetrix's schema was never created. `npm run start:prod` runs
+`clickhouse:initialise` first, but `initialise_selfhosted.js` catches every
+error and exits 0, so an API that boots before ClickHouse is listening starts
+with an empty database and keeps failing every query.
+
+Redeploy the `api` service once ClickHouse is up. Deployments from this repo's
+current `services/api` wrapper wait for ClickHouse automatically.
+
+### ClickHouse `Address already in use: 0.0.0.0:8123` warnings
+
+Benign. The official image's `docker_related_config.xml` sets
+`<listen_host>::</listen_host>`, which binds dual-stack, so the additional
+IPv4 `0.0.0.0` binds from `config.xml` report the port as taken. The
+entrypoint also runs a short-lived server to create the database before
+handing off to the real one, which doubles the messages. As long as
+`/ping` answers, ClickHouse is healthy.
