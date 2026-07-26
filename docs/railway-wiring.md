@@ -14,9 +14,13 @@ The wrappers track Swetrix `v5.3.1` (`swetrix/swetrix-fe` and
 
 ## Application services
 
-Use `https://github.com/osbytes/template-swetrix` as the source for these
-services. Set each service's root directory as shown; its local `railway.toml`
-sets the Dockerfile and healthcheck.
+Use `https://github.com/osbytes/template-swetrix` as the **GitHub source only for
+`gateway`, `frontend`, and `api`**. Do not point `redis` or `clickhouse` at the
+repo — those are Docker Image services (see below). If a data service is wired
+to the repo root, Railpack tries to build the whole monorepo and fails.
+
+Set each app service's root directory as shown; its local `railway.toml` sets
+the Dockerfile and healthcheck.
 
 ### gateway
 
@@ -105,8 +109,8 @@ https://docs.swetrix.com/selfhosting/configuring
 
 ### clickhouse
 
-- Root directory: `/services/clickhouse` (custom image with Swetrix RAM/log
-  tuning configs)
+- **Source type: Docker Image** (not GitHub) —
+  `clickhouse/clickhouse-server:25.8-alpine`
 - Public networking: disabled
 - Volume: mount at `/var/lib/clickhouse`
 - Recommended memory: at least 2 GB
@@ -121,6 +125,10 @@ CLICKHOUSE_PASSWORD=${{secret(32, "abcdef0123456789")}}
 
 The HTTP interface listens on `8123` (`/ping` healthcheck). Native protocol
 port `9000` stays private inside the container.
+
+Local Compose still builds `services/clickhouse` so the upstream Swetrix
+RAM/log tuning XMLs are included. On Railway those tunings are optional; the
+stock image is enough for the template.
 
 ## Auth notes
 

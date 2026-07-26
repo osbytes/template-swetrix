@@ -21,6 +21,8 @@ The template runs Swetrix Community Edition as five Railway services:
 Follow [`docs/railway-wiring.md`](docs/railway-wiring.md) when creating or
 updating the marketplace template. It contains the exact service names,
 reference variables, generated secrets, ports, healthchecks, and volume mounts.
+Only `gateway`, `frontend`, and `api` build from this repo; `redis` and
+`clickhouse` are Docker Image services.
 
 Only the **gateway** URL should be opened in a browser. Swetrix v5 routes API
 requests through `/backend/` on the same public origin.
