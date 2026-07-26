@@ -1,0 +1,88 @@
+name: Check upstream version
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # weekly, Monday ~06:17 UTC — stagger minutes/day per repo to avoid a stampede
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read UPSTREAM.yml
+        id: manifest
+        run: |
+          repo=$(yq '.upstream_repo' UPSTREAM.yml)
+          strategy=$(yq '.version_strategy' UPSTREAM.yml)
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "strategy=$strategy" >> "$GITHUB_OUTPUT"
+
+      - name: Get latest upstream version
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo="${{ steps.manifest.outputs.repo }}"
+          strategy="${{ steps.manifest.outputs.strategy }}"
+          if [ "$strategy" = "release" ]; then
+            tag=$(gh api "repos/$repo/releases/latest" --jq '.tag_name')
+          else
+            tag=$(gh api "repos/$repo/tags" --jq '.[0].name')
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Compare against pinned tags
+        id: diff
+        run: |
+          latest="${{ steps.latest.outputs.tag }}"
+          changed=0
+          count=$(yq '.pinned | length' UPSTREAM.yml)
+          for i in $(seq 0 $((count - 1))); do
+            file=$(yq ".pinned[$i].file" UPSTREAM.yml)
+            kind=$(yq ".pinned[$i].kind" UPSTREAM.yml)
+            case "$kind" in
+              from_tag)
+                current=$(grep -oP '(?<=:)[^\s]+$' <(grep '^FROM' "$file" | tail -1))
+                [ "$current" = "$latest" ] || { sed -i "s|:$current|:$latest|" "$file"; changed=1; }
+                ;;
+              build_arg)
+                argname=$(yq ".pinned[$i].arg_name" UPSTREAM.yml)
+                current=$(grep -oP "(?<=^ARG ${argname}=)[^\s]+$" "$file")
+                [ "$current" = "$latest" ] || { sed -i "s|ARG ${argname}=${current}|ARG ${argname}=${latest}|" "$file"; changed=1; }
+                ;;
+              digest)
+                # Intentionally not auto-bumped: no upstream version tag to compare against.
+                # Flagged in the PR body as a manual-check reminder instead.
+                ;;
+              *)
+                echo "::warning::unknown pin kind '$kind' for $file, skipping" ;;
+            esac
+          done
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
+      - name: Open PR
+        if: steps.diff.outputs.changed == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="upstream-bump/${{ steps.diff.outputs.latest }}"
+          git checkout -b "$branch"
+          git config user.name "template-factory-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: bump upstream to ${{ steps.diff.outputs.latest }}"
+          git push -u origin "$branch"
+          digest_note=""
+          if yq -e '.pinned[] | select(.kind == "digest")' UPSTREAM.yml > /dev/null 2>&1; then
+            digest_note=$'\n\n**Note:** one or more services pin by image digest, not version tag (no upstream version exists to compare) — those were *not* touched by this bump and still need a manual check if you want the latest image.'
+          fi
+          gh pr create --title "Bump upstream to ${{ steps.diff.outputs.latest }}" \
+            --body "Automated version check found a newer upstream release. Review the [upstream changelog](https://github.com/${{ steps.manifest.outputs.repo }}/releases/tag/${{ steps.diff.outputs.latest }}) before merging — this does not run a smoke deploy.${digest_note}" \
+            --head "$branch"

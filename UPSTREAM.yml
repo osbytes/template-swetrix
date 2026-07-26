@@ -1,0 +1,9 @@
+upstream_repo: swetrix/swetrix
+version_strategy: release
+pinned:
+  - file: services/api/Dockerfile
+    kind: from_tag
+  - file: services/frontend/Dockerfile
+    kind: from_tag
+# services/clickhouse/Dockerfile intentionally excluded — pins clickhouse/clickhouse-server,
+# an infra dependency that tracks its own release cadence, not Swetrix's version.
